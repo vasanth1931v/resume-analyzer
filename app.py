@@ -1,22 +1,17 @@
 from flask import Flask, render_template, request, jsonify
 import os
+import re
 import PyPDF2
 import docx
-import spacy
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
 
-import spacy.cli
-
-try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    spacy.cli.download("en_core_web_sm")
-    nlp = spacy.load("en_core_web_sm")
-
+# Ensure uploads folder exists
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 
 # ---------------- TEXT EXTRACTION ---------------- #
@@ -35,12 +30,12 @@ def extract_text_from_docx(file_path):
     return "\n".join([para.text for para in doc.paragraphs])
 
 
-# ---------------- NLP PREPROCESS ---------------- #
+# ---------------- SIMPLE TEXT PREPROCESS ---------------- #
 
 def preprocess(text):
-    doc = nlp(text.lower())
-    tokens = [token.lemma_ for token in doc if not token.is_stop and token.is_alpha]
-    return " ".join(tokens)
+    text = text.lower()
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    return text
 
 
 # ---------------- SKILL EXTRACTION ---------------- #
@@ -91,32 +86,44 @@ def suggest_roles(skills):
 
 # ---------------- ROUTES ---------------- #
 
-@app.route('/')
+@app.route("/")
 def home():
-    return render_template('index.html')
+    return render_template("index.html")
 
 
-@app.route('/analyze', methods=['POST'])
+@app.route("/analyze", methods=["POST"])
 def analyze():
-    resume_file = request.files['resume']
-    job_description = request.form['job_description']
+    if "resume" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
 
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], resume_file.filename)
+    resume_file = request.files["resume"]
+    job_description = request.form.get("job_description", "")
+
+    if resume_file.filename == "":
+        return jsonify({"error": "Empty file name"}), 400
+
+    file_path = os.path.join(app.config["UPLOAD_FOLDER"], resume_file.filename)
     resume_file.save(file_path)
 
+    # Extract text
     if file_path.endswith(".pdf"):
         resume_text = extract_text_from_pdf(file_path)
-    else:
+    elif file_path.endswith(".docx"):
         resume_text = extract_text_from_docx(file_path)
+    else:
+        return jsonify({"error": "Unsupported file format"}), 400
 
+    # Preprocess
     resume_clean = preprocess(resume_text)
     jd_clean = preprocess(job_description)
 
+    # Similarity Calculation
     vectorizer = TfidfVectorizer()
     vectors = vectorizer.fit_transform([resume_clean, jd_clean])
     similarity = cosine_similarity(vectors[0:1], vectors[1:2])[0][0]
     match_percentage = round(similarity * 100, 2)
 
+    # Skills
     resume_skills = extract_skills(resume_text)
     jd_skills = extract_skills(job_description)
 
@@ -131,6 +138,5 @@ def analyze():
     })
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
